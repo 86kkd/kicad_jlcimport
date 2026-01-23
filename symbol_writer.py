@@ -1,0 +1,185 @@
+"""Generate KiCad 9 .kicad_sym symbol blocks."""
+import uuid as uuid_mod
+from typing import List, Optional
+
+from .ee_types import EESymbol
+from .parser import compute_arc_midpoint
+
+
+def _uuid() -> str:
+    return str(uuid_mod.uuid4())
+
+
+def _fmt(v: float) -> str:
+    """Format float for KiCad output."""
+    if v == int(v) and abs(v) < 1e10:
+        return str(int(v))
+    return f"{v:.6f}".rstrip("0").rstrip(".")
+
+
+def write_symbol(symbol: EESymbol, name: str, prefix: str = "U",
+                 footprint_ref: str = "", lcsc_id: str = "",
+                 datasheet: str = "", description: str = "",
+                 manufacturer: str = "", manufacturer_part: str = "",
+                 unit_index: int = 0, total_units: int = 1) -> str:
+    """Generate a complete (symbol ...) block for KiCad 9.
+
+    For multi-unit components, call once per unit with appropriate unit_index.
+    If unit_index == 0 and total_units == 1, generates a single-unit symbol.
+    """
+    lines = []
+
+    if unit_index == 0:
+        # Outer symbol wrapper
+        lines.append(f'  (symbol "{name}"')
+        lines.append(f'    (pin_names (offset 1.016))')
+        lines.append(f'    (in_bom yes)')
+        lines.append(f'    (on_board yes)')
+
+        # Properties
+        ref_x = 0
+        ref_y = _estimate_top(symbol) - 2.0
+        lines.append(f'    (property "Reference" "{prefix}" (at {_fmt(ref_x)} {_fmt(ref_y)} 0)')
+        lines.append(f'      (effects (font (size 1.27 1.27)))')
+        lines.append(f'    )')
+        val_y = _estimate_bottom(symbol) + 2.0
+        lines.append(f'    (property "Value" "{name}" (at {_fmt(ref_x)} {_fmt(val_y)} 0)')
+        lines.append(f'      (effects (font (size 1.27 1.27)))')
+        lines.append(f'    )')
+        if footprint_ref:
+            lines.append(f'    (property "Footprint" "{footprint_ref}" (at 0 0 0)')
+            lines.append(f'      (effects (font (size 1.27 1.27)) hide)')
+            lines.append(f'    )')
+        if datasheet:
+            lines.append(f'    (property "Datasheet" "{datasheet}" (at 0 0 0)')
+            lines.append(f'      (effects (font (size 1.27 1.27)) hide)')
+            lines.append(f'    )')
+        if description:
+            lines.append(f'    (property "Description" "{_escape(description)}" (at 0 0 0)')
+            lines.append(f'      (effects (font (size 1.27 1.27)) hide)')
+            lines.append(f'    )')
+        if lcsc_id:
+            lines.append(f'    (property "LCSC" "{lcsc_id}" (at 0 0 0)')
+            lines.append(f'      (effects (font (size 1.27 1.27)) hide)')
+            lines.append(f'    )')
+        if manufacturer:
+            lines.append(f'    (property "Manufacturer" "{_escape(manufacturer)}" (at 0 0 0)')
+            lines.append(f'      (effects (font (size 1.27 1.27)) hide)')
+            lines.append(f'    )')
+        if manufacturer_part:
+            lines.append(f'    (property "Manufacturer Part" "{_escape(manufacturer_part)}" (at 0 0 0)')
+            lines.append(f'      (effects (font (size 1.27 1.27)) hide)')
+            lines.append(f'    )')
+
+    # Unit sub-symbol for graphics
+    unit_num = unit_index if total_units > 1 else 0
+    lines.append(f'    (symbol "{name}_{unit_num}_1"')
+
+    # Rectangles
+    for rect in symbol.rectangles:
+        x2 = rect.x + rect.width
+        y2 = rect.y + rect.height
+        lines.append(f'      (rectangle (start {_fmt(rect.x)} {_fmt(rect.y)})'
+                     f' (end {_fmt(x2)} {_fmt(y2)})')
+        lines.append(f'        (stroke (width 0.254) (type solid))')
+        lines.append(f'        (fill (type background))')
+        lines.append(f'      )')
+
+    # Circles
+    for circle in symbol.circles:
+        lines.append(f'      (circle (center {_fmt(circle.cx)} {_fmt(circle.cy)})'
+                     f' (radius {_fmt(circle.radius)})')
+        lines.append(f'        (stroke (width 0.254) (type solid))')
+        lines.append(f'        (fill (type none))')
+        lines.append(f'      )')
+
+    # Polylines
+    for poly in symbol.polylines:
+        pts_str = " ".join(f'(xy {_fmt(x)} {_fmt(y)})' for x, y in poly.points)
+        lines.append(f'      (polyline')
+        lines.append(f'        (pts {pts_str})')
+        lines.append(f'        (stroke (width 0.254) (type solid))')
+        fill_type = "background" if poly.fill else "none"
+        lines.append(f'        (fill (type {fill_type}))')
+        lines.append(f'      )')
+
+    # Arcs
+    for arc in symbol.arcs:
+        mid = compute_arc_midpoint(arc.start, arc.end, arc.rx, arc.ry,
+                                   arc.large_arc, arc.sweep)
+        if arc.sweep == 0:
+            s, e = arc.end, arc.start
+        else:
+            s, e = arc.start, arc.end
+        lines.append(f'      (arc (start {_fmt(s[0])} {_fmt(s[1])})'
+                     f' (mid {_fmt(mid[0])} {_fmt(mid[1])})'
+                     f' (end {_fmt(e[0])} {_fmt(e[1])})')
+        lines.append(f'        (stroke (width 0.254) (type solid))')
+        lines.append(f'        (fill (type none))')
+        lines.append(f'      )')
+
+    # Pins
+    for pin in symbol.pins:
+        elec_type = pin.electrical_type
+        # Direction is encoded in the angle field of (at x y angle)
+        pin_line = f'      (pin {elec_type} line (at {_fmt(pin.x)} {_fmt(pin.y)} {_fmt(pin.rotation)})'
+        pin_line += f' (length {_fmt(pin.length)})'
+        lines.append(pin_line)
+
+        name_effects = '(effects (font (size 1.27 1.27)))'
+        if not pin.name_visible:
+            name_effects = '(effects (font (size 1.27 1.27)) hide)'
+        lines.append(f'        (name "{_escape(pin.name)}" {name_effects})')
+
+        num_effects = '(effects (font (size 1.27 1.27)))'
+        if not pin.number_visible:
+            num_effects = '(effects (font (size 1.27 1.27)) hide)'
+        lines.append(f'        (number "{pin.number}" {num_effects})')
+        lines.append(f'      )')
+
+    lines.append(f'    )')  # Close unit sub-symbol
+
+    if unit_index == 0 or (unit_index == total_units - 1 and total_units > 1):
+        lines.append(f'  )')  # Close outer symbol
+
+    return "\n".join(lines) + "\n"
+
+
+def write_symbol_library(symbols_content: List[str]) -> str:
+    """Wrap symbol blocks in a complete library file."""
+    lines = [
+        '(kicad_symbol_lib',
+        '  (version 20241209)',
+        '  (generator "JLCImport")',
+        '  (generator_version "1.0")',
+    ]
+    for sym in symbols_content:
+        lines.append(sym)
+    lines.append(')')
+    return "\n".join(lines) + "\n"
+
+
+
+def _estimate_top(symbol: EESymbol) -> float:
+    """Estimate the top Y coordinate of the symbol."""
+    ys = []
+    for rect in symbol.rectangles:
+        ys.extend([rect.y, rect.y + rect.height])
+    for pin in symbol.pins:
+        ys.append(pin.y)
+    return max(ys) if ys else 5.0
+
+
+def _estimate_bottom(symbol: EESymbol) -> float:
+    """Estimate the bottom Y coordinate of the symbol."""
+    ys = []
+    for rect in symbol.rectangles:
+        ys.extend([rect.y, rect.y + rect.height])
+    for pin in symbol.pins:
+        ys.append(pin.y)
+    return min(ys) if ys else -5.0
+
+
+def _escape(s: str) -> str:
+    """Escape special characters for S-expression strings."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
