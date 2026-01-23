@@ -83,6 +83,7 @@ class JLCImportDialog(wx.Dialog):
         self.results_list.Bind(wx.EVT_LIST_COL_CLICK, self._on_col_click)
         self._sort_col = -1
         self._sort_ascending = True
+        self._imported_ids = set()
         vbox.Add(self.results_list, 2, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
 
         # --- Detail panel (shown on selection) ---
@@ -282,6 +283,7 @@ class JLCImportDialog(wx.Dialog):
             self._sort_col = 3  # sorted by stock
             self._sort_ascending = False
             self._log(f"  {result['total']} total results, showing {len(results)}")
+            self._refresh_imported_ids()
             self._update_col_headers()
             self._repopulate_results()
 
@@ -330,12 +332,33 @@ class JLCImportDialog(wx.Dialog):
             col.SetText(label)
             self.results_list.SetColumn(i, col)
 
+    def _refresh_imported_ids(self):
+        """Scan symbol libraries for already-imported LCSC IDs."""
+        import re
+        self._imported_ids = set()
+        paths = []
+        project_dir = self._get_project_dir()
+        if project_dir:
+            paths.append(os.path.join(project_dir, "JLCImport.kicad_sym"))
+        global_dir = get_global_lib_dir()
+        paths.append(os.path.join(global_dir, "JLCImport.kicad_sym"))
+        for p in paths:
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        for match in re.finditer(r'\(property "LCSC" "(C\d+)"', f.read()):
+                            self._imported_ids.add(match.group(1))
+                except Exception:
+                    pass
+
     def _repopulate_results(self):
         """Repopulate the list control from _search_results."""
         self.results_list.DeleteAllItems()
         for r in self._search_results:
             idx = self.results_list.GetItemCount()
-            self.results_list.InsertItem(idx, r['lcsc'])
+            lcsc = r['lcsc']
+            prefix = "\u2713 " if lcsc in self._imported_ids else ""
+            self.results_list.InsertItem(idx, prefix + lcsc)
             self.results_list.SetItem(idx, 1, r['type'])
             price_str = f"${r['price']:.4f}" if r['price'] else "N/A"
             self.results_list.SetItem(idx, 2, price_str)
@@ -474,6 +497,7 @@ class JLCImportDialog(wx.Dialog):
 
     def _exit_gallery(self):
         """Switch back to main view, selecting the current gallery item."""
+        self._stop_gallery_skeleton()
         self._gallery_panel.Hide()
         self._main_panel.Show()
         # Select the item we were viewing in the gallery
@@ -511,18 +535,58 @@ class JLCImportDialog(wx.Dialog):
         if lcsc_url:
             threading.Thread(target=self._fetch_gallery_image, args=(lcsc_url,), daemon=True).start()
         else:
+            self._stop_gallery_skeleton()
             self._show_gallery_no_image()
 
     def _show_gallery_skeleton(self):
-        """Show a loading placeholder in gallery."""
+        """Show an animated skeleton placeholder in gallery."""
+        self._gallery_skeleton_phase = 0
+        if not hasattr(self, '_gallery_skeleton_timer'):
+            self._gallery_skeleton_timer = wx.Timer(self)
+            self.Bind(wx.EVT_TIMER, self._on_gallery_skeleton_tick, self._gallery_skeleton_timer)
+        self._gallery_skeleton_timer.Start(30)
+        self._draw_gallery_skeleton_frame()
+
+    def _stop_gallery_skeleton(self):
+        """Stop gallery skeleton animation."""
+        if hasattr(self, '_gallery_skeleton_timer'):
+            self._gallery_skeleton_timer.Stop()
+
+    def _on_gallery_skeleton_tick(self, event):
+        """Advance gallery skeleton animation."""
+        self._gallery_skeleton_phase = (self._gallery_skeleton_phase + 3) % 200
+        self._draw_gallery_skeleton_frame()
+
+    def _draw_gallery_skeleton_frame(self):
+        """Draw one frame of the gallery skeleton shimmer."""
+        import math
         size = self._get_gallery_image_size()
         bmp = wx.Bitmap(size, size)
         dc = wx.MemoryDC(bmp)
         dc.SetBackground(wx.Brush(wx.Colour(240, 240, 240)))
         dc.Clear()
+
+        pad = 10
+        inner = size - 2 * pad
         dc.SetPen(wx.TRANSPARENT_PEN)
         dc.SetBrush(wx.Brush(wx.Colour(225, 225, 225)))
-        dc.DrawRoundedRectangle(10, 10, size - 20, size - 20, 8)
+        dc.DrawRoundedRectangle(pad, pad, inner, inner, 8)
+
+        # Shimmer band sweeping left to right (scaled to image size)
+        phase = self._gallery_skeleton_phase
+        band_width = max(80, inner // 3)
+        band_center = int(phase / 200.0 * (inner + band_width)) - band_width // 2 + pad
+
+        for x in range(pad, pad + inner):
+            dist = abs(x - band_center)
+            if dist < band_width // 2:
+                t = dist / (band_width / 2.0)
+                alpha = int(25 * (1 + math.cos(t * math.pi)) / 2)
+                if alpha > 0:
+                    c = min(255, 225 + alpha)
+                    dc.SetPen(wx.Pen(wx.Colour(c, c, c), 1))
+                    dc.DrawLine(x, pad, x, pad + inner)
+
         dc.SelectObject(wx.NullBitmap)
         self._gallery_image.SetBitmap(bmp)
         self._gallery_panel.Layout()
@@ -564,6 +628,7 @@ class JLCImportDialog(wx.Dialog):
         """Set gallery image on main thread."""
         if self._gallery_request_url != lcsc_url:
             return
+        self._stop_gallery_skeleton()
         if not img_data:
             self._show_gallery_no_image()
             return
@@ -795,3 +860,5 @@ class JLCImportDialog(wx.Dialog):
                 self._log("NOTE: Reopen project for new library tables to take effect.")
 
         self._log(f"\nDone! '{title}' imported as {lib_name}:{name}")
+        self._refresh_imported_ids()
+        self._repopulate_results()

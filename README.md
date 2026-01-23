@@ -12,6 +12,7 @@ A KiCad 9 Action Plugin that imports symbols, footprints, and 3D models directly
 - Preview product images with full-screen gallery view
 - Import symbols, footprints, and STEP/WRL 3D models
 - Sortable results by price, stock, part number, etc.
+- Checkmark (✓) indicator on parts already imported to your library
 - Import to project folder or global 3rd-party library
 - Links to datasheets and LCSC product pages
 - CLI tool for scripted/batch imports
@@ -53,12 +54,13 @@ cp -r /path/to/JLCImport ~/Documents/KiCad/9.0/scripting/plugins/JLCImport
 1. Open the PCB Editor and launch **JLCImport** from the External Plugins menu
 2. Type a search query (e.g. "100nF 0402", "ESP32", "RP2350")
 3. Filter by type (Basic/Extended/Both) and stock availability
-4. Click a result to see details, product image, and description
-5. Click the thumbnail to open the full-screen gallery with arrow navigation
-6. Choose a destination:
+4. Parts already in your library are marked with ✓ in the results list
+5. Click a result to see details, product image, and description
+6. Click the thumbnail to open the full-screen gallery with arrow navigation
+7. Choose a destination:
    - **Project** — saves to the current board's directory (`JLCImport.kicad_sym`, `JLCImport.pretty/`, `JLCImport.3dshapes/`)
    - **Global** — saves to KiCad's 3rd-party library folder
-7. Click **Import** to download and save the symbol, footprint, and 3D model
+8. Click **Import** to download and save the symbol, footprint, and 3D model
 
 > **Note:** If library tables (`sym-lib-table` / `fp-lib-table`) are newly created, reopen the project for them to take effect.
 
